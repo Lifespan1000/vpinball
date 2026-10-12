@@ -60,6 +60,19 @@ test('a playtest can be observed and driven through the bridge', { skip: !availa
     await call(client, 'run_script', { code: 'Function AgentTwice(x)\nAgentTwice = 2 * x\nEnd Function', raw: true });
     assert.deepEqual((await call(client, 'run_script', { code: 'AgentBridge.Report AgentTwice(21)' })).reports, ['42']);
 
+    // Errors raised outside of run_script's own Sub (as in the table's event handlers) only reach the
+    // VPX log: game_state flags new ones once, playtest_log lists them
+    assert.equal((await call(client, 'run_script', { code: 'AgentErr = 1 / 0', raw: true })).completed, false);
+    // The log is written asynchronously, so the line may land a moment after the call that caused it
+    let flagged;
+    const waitStart = Date.now();
+    do {
+      flagged = await call(client, 'game_state');
+    } while (!flagged.new_log_problems && Date.now() - waitStart < 5000 && (await sleep(200), true));
+    assert.ok(flagged.new_log_problems?.some((l) => /Division by zero/.test(l)), JSON.stringify(flagged.new_log_problems));
+    assert.equal((await call(client, 'game_state')).new_log_problems, undefined, 'flagged only once');
+    assert.ok((await call(client, 'playtest_log')).lines.some((l) => /Division by zero/.test(l)));
+
     // A full plunger pull sends the ball up the lane
     const startY = second.balls[0].y;
     const trace = await call(client, 'trace_ball', { duration_ms: 2500, start_action: 'LaunchBall', start_pulse_ms: 1000 });

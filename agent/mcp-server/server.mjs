@@ -10,7 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { checkPart, loadSchema, parsePart, partTypes } from '../lib/pack-schema.mjs';
 import { createPart, deletePart, findFeature, getPart, listParts, requirePack, updatePart } from './pack.mjs';
-import { isRunning, killTree, launchVpx, prepareOutput, requireTable, runVpx } from './vpx-cli.mjs';
+import { isProblem, isRunning, killTree, launchVpx, logSince, logSnapshot, prepareOutput, requireTable, runVpx } from './vpx-cli.mjs';
 import * as bridge from './bridge.mjs';
 
 const server = new McpServer({ name: 'vpinball', version: '0.1.0' });
@@ -265,6 +265,7 @@ const sessions = new Map(); // pid -> { table, ini, bridge }
 // The playtest the bridge tools talk to (the plugin listens on one fixed port, so one at a time)
 function bridgeSession() {
   for (const [pid, session] of sessions) {
+    if (session.closed) continue;
     if (!isRunning(pid)) {
       closeSession(pid);
       continue;
@@ -274,10 +275,12 @@ function bridgeSession() {
   throw new Error('no playtest with the bridge is running: start one with playtest');
 }
 
+// Ended sessions are kept (marked closed) so playtest_log can still read what they logged, e.g. after a crash
 function closeSession(pid) {
   const session = sessions.get(pid);
-  if (session?.ini) fs.rmSync(session.ini, { force: true });
-  sessions.delete(pid);
+  if (!session || session.closed) return;
+  if (session.ini) fs.rmSync(session.ini, { force: true });
+  session.closed = true;
 }
 
 tool(
@@ -298,10 +301,11 @@ tool(
     if (withBridge) {
       if (!bridge.bridgeInstalled()) throw new Error('the AgentBridge plugin is not built (see agent/vpx-plugin/CMakeLists.txt), or pass bridge: false');
       for (const [pid, session] of sessions)
-        if (session.bridge && isRunning(pid)) throw new Error(`a bridge playtest is already running (pid ${pid}): stop_playtest it first`);
+        if (session.bridge && !session.closed && isRunning(pid)) throw new Error(`a bridge playtest is already running (pid ${pid}): stop_playtest it first`);
       const ini = bridge.writeBridgeIni();
+      const log = logSnapshot();
       const pid = launchVpx(['-Ini', ini, '-Play', abs(table)]);
-      sessions.set(pid, { table: abs(table), ini, bridge: true });
+      sessions.set(pid, { table: abs(table), ini, bridge: true, log, problemsSeen: 0 });
       try {
         const info = await bridge.waitForGame(() => isRunning(pid));
         return { pid, bridge: true, ...info };
@@ -311,8 +315,9 @@ tool(
         throw e;
       }
     }
+    const log = logSnapshot();
     const pid = launchVpx(['-Play', abs(table)]);
-    sessions.set(pid, { table: abs(table), bridge: false });
+    sessions.set(pid, { table: abs(table), bridge: false, log, problemsSeen: 0 });
     return { pid, bridge: false };
   },
 );
@@ -325,7 +330,7 @@ tool(
     inputSchema: { pid: z.number().int().optional() },
   },
   async ({ pid }) => {
-    const pids = pid !== undefined ? [pid] : [...sessions.keys()];
+    const pids = pid !== undefined ? [pid] : [...sessions.keys()].filter((p) => !sessions.get(p).closed);
     const stopped = [];
     for (const p of pids) {
       if (!sessions.has(p)) throw new Error(`pid ${p} was not started by playtest`);
@@ -355,11 +360,39 @@ tool(
   async () => {
     bridgeSession();
     const [info, state] = await Promise.all([bridge.info(), bridge.balls()]);
-    return { ...info, balls: compactBalls(state.balls) };
+    // Errors in the table's own event handlers only reach the log, so surface any new ones here
+    const session = sessions.get(bridgeSession().pid);
+    const problems = logSince(session.log).filter(isProblem);
+    const fresh = problems.slice(session.problemsSeen);
+    session.problemsSeen = problems.length;
+    return { ...info, balls: compactBalls(state.balls), ...(fresh.length > 0 ? { new_log_problems: fresh.slice(-10), hint: 'see playtest_log' } : {}) };
   },
 );
 
 const actions = ['LeftFlipper', 'RightFlipper', 'StagedLeftFlipper', 'StagedRightFlipper', 'LeftMagnaSave', 'RightMagnaSave', 'LaunchBall', 'LeftNudge', 'CenterNudge', 'RightNudge', 'Tilt', 'AddCredit', 'AddCredit2', 'StartGame', 'Lockbar', 'Pause', 'ExitGame'];
+
+tool(
+  'playtest_log',
+  {
+    title: 'Playtest log',
+    description:
+      "VPX log lines written since a playtest started: script errors in the table's event handlers (with script line and column), " +
+      'missing assets, plugin problems. Errors in code run by run_script are returned by run_script itself; errors in handlers ' +
+      'such as sw25_Hit only show up here.',
+    inputSchema: {
+      pid: z.number().int().optional().describe('Playtest pid (default: the bridge playtest, or the latest one)'),
+      all: z.boolean().optional().describe('All lines instead of errors and warnings only'),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ pid, all }) => {
+    const entry = pid !== undefined ? sessions.get(pid) : ([...sessions.values()].findLast((s) => s.bridge && !s.closed) ?? [...sessions.values()].at(-1));
+    if (!entry) throw new Error('no playtest has been started (or that pid was not started by playtest)');
+    const lines = logSince(entry.log);
+    const selected = all ? lines : lines.filter(isProblem);
+    return { lines: selected.slice(-100), truncated: Math.max(0, selected.length - 100) };
+  },
+);
 
 tool(
   'press',

@@ -64,6 +64,32 @@ function logFiles() {
     .filter((f) => fs.existsSync(f));
 }
 
+// Log positions now, to read what is appended after (VPX appends to one shared log per version folder)
+export function logSnapshot() {
+  return new Map(logFiles().map((f) => [f, fs.statSync(f).size]));
+}
+
+// Lines appended to the logs since the snapshot
+export function logSince(snapshot) {
+  let lines = [];
+  for (const f of logFiles()) {
+    const start = snapshot.get(f) ?? 0;
+    const size = fs.statSync(f).size;
+    if (size <= start) continue;
+    const fd = fs.openSync(f, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      lines = lines.concat(buf.toString('utf8').split(/\r?\n/).filter((l) => l !== ''));
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  return lines;
+}
+
+export const isProblem = (line) => / (ERROR|WARN|FATAL) /.test(line);
+
 function killTree(pid) {
   try {
     execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
@@ -76,7 +102,7 @@ function killTree(pid) {
 // (errors and warnings, plus the command's own INFO result lines).
 export function runVpx(args, { timeoutMs = 300_000 } = {}) {
   const exe = vpxExe();
-  const before = new Map(logFiles().map((f) => [f, fs.statSync(f).size]));
+  const before = logSnapshot();
   return new Promise((resolve) => {
     const child = spawn(exe, args, { cwd: path.dirname(exe), windowsHide: true, stdio: 'ignore' });
     let timedOut = false;
@@ -86,21 +112,7 @@ export function runVpx(args, { timeoutMs = 300_000 } = {}) {
     }, timeoutMs);
     const finish = (code) => {
       clearTimeout(timer);
-      let log = [];
-      for (const f of logFiles()) {
-        const start = before.get(f) ?? 0;
-        const size = fs.statSync(f).size;
-        if (size <= start) continue;
-        const fd = fs.openSync(f, 'r');
-        try {
-          const buf = Buffer.alloc(size - start);
-          fs.readSync(fd, buf, 0, buf.length, start);
-          log = log.concat(buf.toString('utf8').split(/\r?\n/));
-        } finally {
-          fs.closeSync(fd);
-        }
-      }
-      const relevant = log.filter((l) => / (ERROR|WARN|FATAL) /.test(l) || /Command::Execute@/.test(l));
+      const relevant = logSince(before).filter((l) => isProblem(l) || /Command::Execute@/.test(l));
       resolve({ code: timedOut ? null : code, timedOut, log: relevant.slice(-60) });
     };
     child.on('exit', finish);
