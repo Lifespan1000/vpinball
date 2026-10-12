@@ -49,13 +49,26 @@ export function setIniValue(text, section, key, value) {
 // from other VPX processes running at the same time cannot be mistaken for the playtest's.
 // With the bridge, the copy enables the plugin and turns focus pausing off (an agent playtest must
 // keep running while the user works in another window).
-export function createPlaytestPrefs({ withBridge }) {
+// With window ({ width, height, x, y }), the playfield runs in a normal (movable, fixed size) window
+// instead of the user's display mode. VPX's default is "windowed" at the display's full size, which
+// looks like fullscreen, so an explicit size is what makes it a window. Sizes are physical pixels: on a
+// display scaled to 150%, 1600 x 1000 shows as 1067 x 667. Keep the aspect of the display the table's
+// camera was framed for (16:10 here): a near square window cut off the plunger lane side.
+export const DEFAULT_PLAYTEST_WINDOW = { width: 1600, height: 1000, x: 60, y: 60 };
+export function createPlaytestPrefs({ withBridge, window = null }) {
   const source = userIni();
   let text = source ? fs.readFileSync(source, 'utf8') : '';
   if (withBridge) {
     text = setIniValue(text, 'Plugin.AgentBridge', 'Enable', '1');
     text = setIniValue(text, 'Plugin.AgentBridge', 'Port', String(bridgePort));
     text = setIniValue(text, 'Player', 'PauseOnFocusLoss', '0');
+  }
+  if (window) {
+    text = setIniValue(text, 'Player', 'PlayfieldFullScreen', '0');
+    text = setIniValue(text, 'Player', 'PlayfieldWidth', String(window.width));
+    text = setIniValue(text, 'Player', 'PlayfieldHeight', String(window.height));
+    text = setIniValue(text, 'Player', 'PlayfieldWndX', String(window.x ?? 40));
+    text = setIniValue(text, 'Player', 'PlayfieldWndY', String(window.y ?? 40));
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpx-playtest-'));
   fs.writeFileSync(path.join(dir, 'VPinballX.ini'), text);

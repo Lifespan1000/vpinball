@@ -316,15 +316,19 @@ tool(
     inputSchema: {
       table: z.string().describe('.vpx, .vpz or pack folder'),
       bridge: z.boolean().optional().describe('Enable the AgentBridge plugin for this session (default true)'),
+      windowed: z.boolean().optional().describe("Run in a normal movable window (default true); false uses the user's own display settings, usually fullscreen"),
+      width: z.number().int().min(320).max(16384).optional().describe('Window width in physical pixels (display scaling applies: 1600 shows as 1067 at 150%); keep the display aspect or the view is cropped'),
+      height: z.number().int().min(240).max(16384).optional().describe('Window height in physical pixels'),
     },
   },
-  async ({ table, bridge: withBridge = true }) => {
+  async ({ table, bridge: withBridge = true, windowed = true, width, height }) => {
+    const window = windowed ? { ...bridge.DEFAULT_PLAYTEST_WINDOW, ...(width ? { width } : {}), ...(height ? { height } : {}) } : null;
     requireTable(abs(table));
     if (withBridge) {
       if (!bridge.bridgeInstalled()) throw new Error('the AgentBridge plugin is not built (see agent/vpx-plugin/CMakeLists.txt), or pass bridge: false');
       for (const [pid, session] of sessions)
         if (session.bridge && !session.closed && isRunning(pid)) throw new Error(`a bridge playtest is already running (pid ${pid}): stop_playtest it first`);
-      const prefDir = bridge.createPlaytestPrefs({ withBridge: true });
+      const prefDir = bridge.createPlaytestPrefs({ withBridge: true, window });
       const pid = launchVpx(['-PrefPath', prefDir, '-Play', abs(table)]);
       sessions.set(pid, { table: abs(table), prefDir, bridge: true, problemsSeen: 0 });
       try {
@@ -337,7 +341,7 @@ tool(
         throw e;
       }
     }
-    const prefDir = bridge.createPlaytestPrefs({ withBridge: false });
+    const prefDir = bridge.createPlaytestPrefs({ withBridge: false, window });
     const pid = launchVpx(['-PrefPath', prefDir, '-Play', abs(table)]);
     sessions.set(pid, { table: abs(table), prefDir, bridge: false, problemsSeen: 0 });
     return { pid, bridge: false, prefs: prefDir };
