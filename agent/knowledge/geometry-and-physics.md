@@ -35,6 +35,8 @@ Main flippers on every table measured:
 | Return | 0.05 | 0.055–0.07 |
 
 - The pair is centered at x ≈ 434–450, left of the playfield's middle (476) on every table measured (the plunger lane takes the right edge), with pivots 327–394 VPU above the bottom edge.
+- **The lower playfield mirrors around that center, not the table's.** On the blank/example table the inlanes are at x = 129 and 743 and the playable width runs from the left wall (inner edge 23) to the plunger lane wall (inner edge 851), so mirroring a left side feature to the right is x' = 872 − x. Mirroring with the table width (952 − x) puts a right inlane feature into the right outlane (found 2026-10-12 building a ramp return).
+- Upper flippers mounted against a wall need a feed guide **collinear with the flipper's top surface**, ending just outside its swept area: a steeper guide, or a pivot against the wall, made a ball rolling down the wall skip over the flipper or come to rest on its hub (measured 2026-10-12 on a mid-playfield flipper resting at ±147°).
 - Upper (mini) flippers on Game of Thrones are standard length (114.7) with lower strength (2200).
 - VPW tables hide their physics flippers (`visible: false`) and draw them with primitives; find them with `list_parts` type `flipper`, not by looking.
 - World Cup Soccer uses an invisible 220 long flipper with tiny radii as a moving **diverter**: a flipper is the easy way to make any scripted swinging wall.

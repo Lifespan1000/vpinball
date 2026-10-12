@@ -47,6 +47,17 @@ function findPart(pack, name) {
   return entry;
 }
 
+// Outline points given as just {center: {x, y}} get the other per-point fields VPX writes (smooth,
+// slingshot, texture flags, ...) from the part's existing first point, so the pack keeps the shape VPX
+// itself would save and diffs stay limited to the coordinates
+const DRAGPOINT_DEFAULTS = { ui_locked: false, ui_visible: true, position_z: 0, smooth: false, slingshot: false, auto_texture: true, texture_coordinate: 0 };
+function completeDragpoints(points, existing) {
+  if (!Array.isArray(points)) return points;
+  const { center: _ignored, ...fromExisting } = Array.isArray(existing) && existing[0] ? existing[0] : {};
+  const template = { ...DRAGPOINT_DEFAULTS, ...fromExisting };
+  return points.map((p) => (p && typeof p === 'object' ? { center: p.center, ...template, ...p } : p));
+}
+
 function where(doc) {
   const p = doc.position ?? doc.center;
   if (!p) return undefined;
@@ -83,6 +94,7 @@ export function updatePart(pack, name, set = {}, unset = []) {
       else target[k] = v;
     }
   };
+  if (set.dragpoints) set = { ...set, dragpoints: completeDragpoints(set.dragpoints, doc.dragpoints) };
   merge(doc, set);
   for (const k of unset) delete doc[k];
   const errors = checkPart(doc, actual, { partial: true });
@@ -108,7 +120,7 @@ export function createPart(pack, name, { type, from, properties = {} } = {}) {
       throw new Error(`a new ${type} needs its outline: pass dragpoints ([{"center": {"x": .., "y": ..}}, ...]), or copy an existing ${type} with from`);
     doc = { $type: type };
   }
-  Object.assign(doc, properties);
+  Object.assign(doc, properties.dragpoints ? { ...properties, dragpoints: completeDragpoints(properties.dragpoints, doc.dragpoints) } : properties);
   const errors = checkPart(doc, name, { partial: true });
   if (errors.length > 0) throw new Error(`not created, the part is invalid:\n${errors.join('\n')}`);
   const file = path.join(pack, 'parts', `${sanitizeFileName(name)}.json`);
