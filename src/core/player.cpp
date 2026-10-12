@@ -239,6 +239,7 @@ Player::Player(PinTable *const table, const PlayMode playMode, LoadProgress &loa
       m_audioPlayer->SetSpatialMode(m_ptable->GetSettings().GetPlayerVR_SpatialAudioBackglass(), m_ptable->GetSettings().GetPlayerVR_SpatialAudioPlayfield());
 
    m_detectScriptHang = m_ptable->GetSettings().GetPlayer_DetectHang();
+   m_pauseOnFocusLoss = m_ptable->GetSettings().GetPlayer_PauseOnFocusLoss();
 
    m_minphyslooptime = m_ptable->GetSettings().GetPlayer_MinPhysLoopTime();
 

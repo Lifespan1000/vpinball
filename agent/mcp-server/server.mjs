@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { checkPart, loadSchema, parsePart, partTypes } from '../lib/pack-schema.mjs';
 import { createPart, deletePart, findFeature, getPart, listParts, requirePack, updatePart } from './pack.mjs';
 import { isRunning, killTree, launchVpx, prepareOutput, requireTable, runVpx } from './vpx-cli.mjs';
+import * as bridge from './bridge.mjs';
 
 const server = new McpServer({ name: 'vpinball', version: '0.1.0' });
 
@@ -18,11 +19,13 @@ const ok = (value) => ({ content: [{ type: 'text', text: typeof value === 'strin
 const fail = (message) => ({ content: [{ type: 'text', text: message }], isError: true });
 
 // Tool handlers report problems as tool errors (isError) rather than protocol errors, so the model
-// sees the message and can correct its call
+// sees the message and can correct its call. A handler returning { content } passes it through as is
+// (images).
 function tool(name, config, handler) {
   server.registerTool(name, config, async (args) => {
     try {
-      return ok(await handler(args));
+      const result = await handler(args);
+      return result && Array.isArray(result.content) ? result : ok(result);
     } catch (e) {
       return fail(e.message);
     }
@@ -257,22 +260,60 @@ tool(
   },
 );
 
-const sessions = new Map(); // pid -> table
+const sessions = new Map(); // pid -> { table, ini, bridge }
+
+// The playtest the bridge tools talk to (the plugin listens on one fixed port, so one at a time)
+function bridgeSession() {
+  for (const [pid, session] of sessions) {
+    if (!isRunning(pid)) {
+      closeSession(pid);
+      continue;
+    }
+    if (session.bridge) return { pid, ...session };
+  }
+  throw new Error('no playtest with the bridge is running: start one with playtest');
+}
+
+function closeSession(pid) {
+  const session = sessions.get(pid);
+  if (session?.ini) fs.rmSync(session.ini, { force: true });
+  sessions.delete(pid);
+}
 
 tool(
   'playtest',
   {
     title: 'Playtest a table',
     description:
-      'Opens the table in VPX on the user\'s screen to play it. Ask the user to play and report back, or stop it with stop_playtest. ' +
-      'Edits to the pack are only picked up by a new playtest.',
-    inputSchema: { table: z.string().describe('.vpx, .vpz or pack folder') },
+      "Opens the table in VPX on the user's screen and waits until its game runs. With the bridge (default), the agent can then " +
+      'watch and drive the game with game_state, press, trace_ball, run_script and screenshot, and the game keeps running when ' +
+      'the VPX window loses focus. Edits to the pack are only picked up by a new playtest.',
+    inputSchema: {
+      table: z.string().describe('.vpx, .vpz or pack folder'),
+      bridge: z.boolean().optional().describe('Enable the AgentBridge plugin for this session (default true)'),
+    },
   },
-  async ({ table }) => {
+  async ({ table, bridge: withBridge = true }) => {
     requireTable(abs(table));
+    if (withBridge) {
+      if (!bridge.bridgeInstalled()) throw new Error('the AgentBridge plugin is not built (see agent/vpx-plugin/CMakeLists.txt), or pass bridge: false');
+      for (const [pid, session] of sessions)
+        if (session.bridge && isRunning(pid)) throw new Error(`a bridge playtest is already running (pid ${pid}): stop_playtest it first`);
+      const ini = bridge.writeBridgeIni();
+      const pid = launchVpx(['-Ini', ini, '-Play', abs(table)]);
+      sessions.set(pid, { table: abs(table), ini, bridge: true });
+      try {
+        const info = await bridge.waitForGame(() => isRunning(pid));
+        return { pid, bridge: true, ...info };
+      } catch (e) {
+        killTree(pid);
+        closeSession(pid);
+        throw e;
+      }
+    }
     const pid = launchVpx(['-Play', abs(table)]);
-    sessions.set(pid, abs(table));
-    return { pid, table: abs(table) };
+    sessions.set(pid, { table: abs(table), bridge: false });
+    return { pid, bridge: false };
   },
 );
 
@@ -292,9 +333,115 @@ tool(
         killTree(p);
         stopped.push(p);
       }
-      sessions.delete(p);
+      closeSession(p);
     }
     return { stopped };
+  },
+);
+
+const round1 = (n) => Math.round(n * 10) / 10;
+const compactBalls = (balls) => balls.map((b) => ({ x: round1(b.x), y: round1(b.y), z: round1(b.z), vx: round1(b.vx), vy: round1(b.vy) }));
+
+tool(
+  'game_state',
+  {
+    title: 'Game state',
+    description:
+      'Game time and the balls in play of the running playtest: position (VPX units, x right, y down the playfield, z up; the ' +
+      'ball is 50 across) and velocity (units per 10ms physics tick). Use run_script for anything else (lights, switches, score).',
+    inputSchema: {},
+    annotations: { readOnlyHint: true },
+  },
+  async () => {
+    bridgeSession();
+    const [info, state] = await Promise.all([bridge.info(), bridge.balls()]);
+    return { ...info, balls: compactBalls(state.balls) };
+  },
+);
+
+const actions = ['LeftFlipper', 'RightFlipper', 'StagedLeftFlipper', 'StagedRightFlipper', 'LeftMagnaSave', 'RightMagnaSave', 'LaunchBall', 'LeftNudge', 'CenterNudge', 'RightNudge', 'Tilt', 'AddCredit', 'AddCredit2', 'StartGame', 'Lockbar', 'Pause', 'ExitGame'];
+
+tool(
+  'press',
+  {
+    title: 'Press a button',
+    description:
+      'Presses a player button in the running playtest: hold (press true), release (press false), or tap for pulse_ms. LaunchBall is ' +
+      'the plunger: a longer pulse pulls it further (about 1000ms for a full pull). Flippers stay up while held. Start a game with ' +
+      'AddCredit then StartGame on tables with credits.',
+    inputSchema: {
+      action: z.enum(actions),
+      press: z.boolean().optional().describe('Hold (true) or release (false); ignored with pulse_ms'),
+      pulse_ms: z.number().int().min(10).max(10000).optional(),
+    },
+  },
+  async ({ action, press, pulse_ms }) => {
+    bridgeSession();
+    return bridge.input(action, { press: press ?? true, pulseMs: pulse_ms });
+  },
+);
+
+tool(
+  'trace_ball',
+  {
+    title: 'Trace the ball',
+    description:
+      'Samples the balls of the running playtest over a period, optionally starting with a button press, to see what a shot or ' +
+      'a part change does: e.g. start with LaunchBall pulsed for 1000ms and watch where the ball goes. Samples are as frequent ' +
+      'as the game allows (a few per 100ms at best).',
+    inputSchema: {
+      duration_ms: z.number().int().min(100).max(30000),
+      interval_ms: z.number().int().min(50).max(5000).optional().describe('Minimum time between samples (default 200)'),
+      start_action: z.enum(actions).optional(),
+      start_pulse_ms: z.number().int().min(10).max(10000).optional().describe('Pulse length of start_action (default 150)'),
+    },
+  },
+  async ({ duration_ms, interval_ms = 200, start_action, start_pulse_ms = 150 }) => {
+    bridgeSession();
+    if (start_action) await bridge.input(start_action, { pulseMs: start_pulse_ms });
+    const samples = [];
+    const end = Date.now() + duration_ms;
+    while (Date.now() < end) {
+      const t0 = Date.now();
+      const state = await bridge.balls();
+      samples.push({ t: Math.round(state.game_time * 1000) / 1000, balls: compactBalls(state.balls) });
+      const wait = interval_ms - (Date.now() - t0);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    }
+    return { samples };
+  },
+);
+
+tool(
+  'run_script',
+  {
+    title: 'Run script in the game',
+    description:
+      "Runs VBScript in the running playtest's script context and returns what it reports with AgentBridge.Report \"text\" " +
+      '(one entry per call). By default the code is the body of a Sub: it may Dim variables, and runtime errors are returned. ' +
+      'With raw it runs at global scope, to define or replace Subs/Functions live (e.g. a new sw25_Hit handler). Examples: ' +
+      'AgentBridge.Report LeftFlipper.CurrentAngle ; AgentBridge.Report Light1.State ; AgentBridge.Report Controller.Switch(25). ' +
+      'Compile errors only show as completed: false.',
+    inputSchema: { code: z.string(), raw: z.boolean().optional() },
+  },
+  async ({ code, raw }) => {
+    bridgeSession();
+    return bridge.runScript(code, raw ?? false);
+  },
+);
+
+tool(
+  'screenshot',
+  {
+    title: 'Screenshot the playtest',
+    description: 'Captures the VPX window of the running playtest, to see the table as the player does. The window must not be minimized.',
+    inputSchema: { max_width: z.number().int().min(320).max(2560).optional() },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ max_width }) => {
+    const { pid } = bridgeSession();
+    const { png, size } = await bridge.screenshot(pid, max_width ?? 1280);
+    return { content: [{ type: 'image', data: png.toString('base64'), mimeType: 'image/png' }, { type: 'text', text: `VPX window, ${size}` }] };
   },
 );
 
