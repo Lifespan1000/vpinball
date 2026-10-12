@@ -192,7 +192,10 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
    }
    else
    {
-      uint32_t wnd_flags = SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+      // A windowed playfield may be decorated and resizable on request; the swapchain follows the window size
+      // (see RenderDevice), while the render resolution and camera stay as created and are scaled to it
+      const bool decorated = m_windowId == VPXWindowId::VPXWINDOW_Playfield && m_windowMode == Windowed && settings.GetPlayer_PlayfieldWindowResizable();
+      uint32_t wnd_flags = (decorated ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_BORDERLESS) | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
       #if defined(ENABLE_OPENGL)
          wnd_flags |= SDL_WINDOW_OPENGL; // Leads to read OpenGL context hint (swapchain backbuffer format, ...)
@@ -242,6 +245,9 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
       if (g_isAndroid)
          SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
       m_nwnd = SDL_CreateWindowWithProperties(props);
+      // The camera is set up for the initial aspect ratio: keep it while resizing instead of stretching the view
+      if (decorated && m_nwnd != nullptr && m_height > 0)
+         SDL_SetWindowAspectRatio(m_nwnd, (float)m_width / (float)m_height, (float)m_width / (float)m_height);
       SDL_DestroyProperties(props);
    }
 

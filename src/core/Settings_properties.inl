@@ -185,6 +185,7 @@ PropBool(Player, TouchOverlay, "Touch Overlay"s, "Display an overlay showing tou
 PropBool(Player, EnableCameraModeFlyAround, "Legacy Fly Over Mode"s, "Enable moving camera when using the Tweak menu (legacy, replaced by LiveUI fly mode)"s, false);
 PropBool(Player, DetectHang, "Detect Script Hang"s, ""s, false);
 PropBool(Player, PauseOnFocusLoss, "Pause When Unfocused"s, "Pause the game while its window does not have the focus (disable for automated playtests driven by another application)"s, true);
+PropBool(Player, PlayfieldWindowResizable, "Resizable Window"s, "In windowed mode, give the playfield window a title bar and resize border (resizing keeps the aspect ratio the view was set up for)"s, false);
 PropInt(Player, SecurityLevel, "Security Level"s, ""s, 0, 4, DEFAULT_SECURITY_LEVEL);
 PropInt(Player, NumberOfTimesToShowTouchMessage, "NumberOfTimesToShowTouchMessage"s, "Number of times to re-display the touch display message"s, 0, 100, 10);
 PropBool(Player, Mirror, "Mirror"s, "Mirror the table (left <-> right)"s, false);
