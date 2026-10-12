@@ -1,0 +1,19 @@
+{
+  "name": "vpinball-agent-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server for building and editing Visual Pinball X tables as VPZ packs",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "4.6.6"
+  }
+}
