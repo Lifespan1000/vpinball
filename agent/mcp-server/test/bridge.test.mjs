@@ -82,6 +82,11 @@ test('a playtest can be observed and driven through the bridge', { skip: !availa
     const shot = await call(client, 'screenshot', { max_width: 640 });
     assert.equal(shot[0].type, 'image');
     assert.ok(Buffer.from(shot[0].data, 'base64').length > 10_000, 'the screenshot holds an image');
+
+    // Stopping removes the playtest's private preferences folder (VPX must have exited to release its log)
+    const stop = await call(client, 'stop_playtest');
+    assert.deepEqual(stop.problems, undefined);
+    assert.equal(fs.existsSync(started.prefs), false, 'the playtest preferences folder was removed');
   } finally {
     await call(client, 'stop_playtest').catch(() => {});
     await client.close();

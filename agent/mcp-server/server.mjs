@@ -10,7 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { checkPart, loadSchema, parsePart, partTypes } from '../lib/pack-schema.mjs';
 import { createPart, deletePart, findFeature, getPart, listParts, requirePack, updatePart } from './pack.mjs';
-import { isProblem, isRunning, killTree, launchVpx, logSince, logSnapshot, prepareOutput, requireTable, runVpx } from './vpx-cli.mjs';
+import { isProblem, isRunning, killTree, launchVpx, prepareOutput, requireTable, runVpx } from './vpx-cli.mjs';
 import * as bridge from './bridge.mjs';
 
 const server = new McpServer({ name: 'vpinball', version: '0.1.0' });
@@ -267,7 +267,7 @@ function bridgeSession() {
   for (const [pid, session] of sessions) {
     if (session.closed) continue;
     if (!isRunning(pid)) {
-      closeSession(pid);
+      closeSession(pid); // never rejects; finishes in the background
       continue;
     }
     if (session.bridge) return { pid, ...session };
@@ -275,13 +275,35 @@ function bridgeSession() {
   throw new Error('no playtest with the bridge is running: start one with playtest');
 }
 
-// Ended sessions are kept (marked closed) so playtest_log can still read what they logged, e.g. after a crash
-function closeSession(pid) {
+// Ended sessions are kept (marked closed, their log read into memory before their preferences folder
+// is removed) so playtest_log can still show what they logged, e.g. after a crash
+async function closeSession(pid) {
   const session = sessions.get(pid);
   if (!session || session.closed) return;
-  if (session.ini) fs.rmSync(session.ini, { force: true });
+  session.savedLog = bridge.playtestLog(session.prefDir);
   session.closed = true;
+  // Windows keeps the folder locked for ~100ms after VPX exits; fs.rmSync's maxRetries does not cover
+  // that EPERM (it fails at once), hence the explicit retries
+  const end = Date.now() + 5000;
+  for (;;) {
+    try {
+      fs.rmSync(session.prefDir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (Date.now() > end) return `could not remove ${session.prefDir}: ${e.code ?? e.message}`;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
 }
+
+// taskkill returns before the process is gone, and until then it still holds its log file open
+async function waitForExit(pid, timeoutMs = 10_000) {
+  const end = Date.now() + timeoutMs;
+  while (isRunning(pid) && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+  return !isRunning(pid);
+}
+
+const sessionLog = (session) => session.savedLog ?? bridge.playtestLog(session.prefDir);
 
 tool(
   'playtest',
@@ -302,23 +324,23 @@ tool(
       if (!bridge.bridgeInstalled()) throw new Error('the AgentBridge plugin is not built (see agent/vpx-plugin/CMakeLists.txt), or pass bridge: false');
       for (const [pid, session] of sessions)
         if (session.bridge && !session.closed && isRunning(pid)) throw new Error(`a bridge playtest is already running (pid ${pid}): stop_playtest it first`);
-      const ini = bridge.writeBridgeIni();
-      const log = logSnapshot();
-      const pid = launchVpx(['-Ini', ini, '-Play', abs(table)]);
-      sessions.set(pid, { table: abs(table), ini, bridge: true, log, problemsSeen: 0 });
+      const prefDir = bridge.createPlaytestPrefs({ withBridge: true });
+      const pid = launchVpx(['-PrefPath', prefDir, '-Play', abs(table)]);
+      sessions.set(pid, { table: abs(table), prefDir, bridge: true, problemsSeen: 0 });
       try {
         const info = await bridge.waitForGame(() => isRunning(pid));
-        return { pid, bridge: true, ...info };
+        return { pid, bridge: true, prefs: prefDir, ...info };
       } catch (e) {
         killTree(pid);
-        closeSession(pid);
+        await waitForExit(pid);
+        await closeSession(pid);
         throw e;
       }
     }
-    const log = logSnapshot();
-    const pid = launchVpx(['-Play', abs(table)]);
-    sessions.set(pid, { table: abs(table), bridge: false, log, problemsSeen: 0 });
-    return { pid, bridge: false };
+    const prefDir = bridge.createPlaytestPrefs({ withBridge: false });
+    const pid = launchVpx(['-PrefPath', prefDir, '-Play', abs(table)]);
+    sessions.set(pid, { table: abs(table), prefDir, bridge: false, problemsSeen: 0 });
+    return { pid, bridge: false, prefs: prefDir };
   },
 );
 
@@ -332,15 +354,18 @@ tool(
   async ({ pid }) => {
     const pids = pid !== undefined ? [pid] : [...sessions.keys()].filter((p) => !sessions.get(p).closed);
     const stopped = [];
+    const problems = [];
     for (const p of pids) {
       if (!sessions.has(p)) throw new Error(`pid ${p} was not started by playtest`);
       if (isRunning(p)) {
         killTree(p);
+        if (!(await waitForExit(p))) problems.push(`pid ${p} did not exit`);
         stopped.push(p);
       }
-      closeSession(p);
+      const cleanup = await closeSession(p);
+      if (cleanup) problems.push(cleanup);
     }
-    return { stopped };
+    return problems.length > 0 ? { stopped, problems } : { stopped };
   },
 );
 
@@ -362,7 +387,7 @@ tool(
     const [info, state] = await Promise.all([bridge.info(), bridge.balls()]);
     // Errors in the table's own event handlers only reach the log, so surface any new ones here
     const session = sessions.get(bridgeSession().pid);
-    const problems = logSince(session.log).filter(isProblem);
+    const problems = sessionLog(session).filter(isProblem);
     const fresh = problems.slice(session.problemsSeen);
     session.problemsSeen = problems.length;
     return { ...info, balls: compactBalls(state.balls), ...(fresh.length > 0 ? { new_log_problems: fresh.slice(-10), hint: 'see playtest_log' } : {}) };
@@ -388,7 +413,7 @@ tool(
   async ({ pid, all }) => {
     const entry = pid !== undefined ? sessions.get(pid) : ([...sessions.values()].findLast((s) => s.bridge && !s.closed) ?? [...sessions.values()].at(-1));
     if (!entry) throw new Error('no playtest has been started (or that pid was not started by playtest)');
-    const lines = logSince(entry.log);
+    const lines = sessionLog(entry);
     const selected = all ? lines : lines.filter(isProblem);
     return { lines: selected.slice(-100), truncated: Math.max(0, selected.length - 100) };
   },

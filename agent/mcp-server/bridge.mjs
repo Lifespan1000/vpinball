@@ -44,17 +44,27 @@ export function setIniValue(text, section, key, value) {
   return lines.join('\r\n');
 }
 
-// A copy of the user's settings with the bridge enabled and focus pausing off (an agent playtest must
-// keep running while the user works in another window), so their own file is never modified
-export function writeBridgeIni(pid = process.pid) {
+// A private preferences folder for one playtest (VPX -PrefPath): a copy of the user's settings, so
+// their own file is never modified, and a log of its own (VPX writes vpinball.log there), so lines
+// from other VPX processes running at the same time cannot be mistaken for the playtest's.
+// With the bridge, the copy enables the plugin and turns focus pausing off (an agent playtest must
+// keep running while the user works in another window).
+export function createPlaytestPrefs({ withBridge }) {
   const source = userIni();
   let text = source ? fs.readFileSync(source, 'utf8') : '';
-  text = setIniValue(text, 'Plugin.AgentBridge', 'Enable', '1');
-  text = setIniValue(text, 'Plugin.AgentBridge', 'Port', String(bridgePort));
-  text = setIniValue(text, 'Player', 'PauseOnFocusLoss', '0');
-  const file = path.join(os.tmpdir(), `vpx-agent-${pid}-${Date.now()}.ini`);
-  fs.writeFileSync(file, text);
-  return file;
+  if (withBridge) {
+    text = setIniValue(text, 'Plugin.AgentBridge', 'Enable', '1');
+    text = setIniValue(text, 'Plugin.AgentBridge', 'Port', String(bridgePort));
+    text = setIniValue(text, 'Player', 'PauseOnFocusLoss', '0');
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpx-playtest-'));
+  fs.writeFileSync(path.join(dir, 'VPinballX.ini'), text);
+  return dir;
+}
+
+export function playtestLog(prefDir) {
+  const file = path.join(prefDir, 'vpinball.log');
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l !== '') : [];
 }
 
 async function request(method, route, body, timeoutMs = 15_000) {
