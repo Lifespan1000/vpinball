@@ -52,6 +52,17 @@ public:
    void Execute() override;
 };
 
+class ConvertTableCommand : public TableBasedCommand
+{
+public:
+   ConvertTableCommand(const std::filesystem::path& tableFilename, const std::filesystem::path& outputFilename);
+   ~ConvertTableCommand() override = default;
+   void Execute() override;
+
+private:
+   const std::filesystem::path m_outputFilename;
+};
+
 class PlayTableCommand : public TableBasedCommand
 {
 public:

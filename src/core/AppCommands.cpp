@@ -25,9 +25,15 @@
 
 // A Visual Pinball table is an OLE compound file (CFB). Validate the signature so passing a
 // non-table file (wrong type, or a path typo resolving to something else) reports a clear error
-// instead of loading into a black screen.
+// instead of loading into a black screen. VPZ packs are tables too: a folder needs its manifest, so
+// that the plain directories some frontends pass along are still ignored.
 static bool IsTableFile(const std::filesystem::path& path)
 {
+   std::error_code ec;
+   if (std::filesystem::is_directory(path, ec))
+      return std::filesystem::exists(path / "manifest.json", ec);
+   if (JSONSerializer::IsPack(path))
+      return std::filesystem::exists(path, ec);
    std::ifstream f(path, std::ios::binary);
    if (!f.is_open())
       return false;
@@ -41,6 +47,9 @@ static bool IsTableFile(const std::filesystem::path& path)
          return false;
    return true;
 }
+
+// FileExists rejects directories, which would turn away folder packs before IsTableFile sees them
+static bool TableExists(const std::filesystem::path& path) { return FileExists(path) || IsTableFile(path); }
 
 
 ShowInfoAndExitCommand::ShowInfoAndExitCommand(const string& title, const string& message, int exitCode)
@@ -175,6 +184,42 @@ void ExportPOVCommand::Execute()
       table->mViewSetups[i].SaveToTableOverrideSettings(table->GetSettings(), (ViewSetupID)i);
    table->GetSettings().Save();
    table->Release();
+}
+
+
+ConvertTableCommand::ConvertTableCommand(const std::filesystem::path& tableFilename, const std::filesystem::path& outputFilename)
+   : TableBasedCommand(tableFilename)
+   , m_outputFilename(outputFilename)
+{
+}
+
+// Headless conversion between .vpx and VPZ packs, so tables can be turned into editable text and back
+// without the editor. The result is only reported through the exit code and the log, as this runs as
+// a GUI application without a console.
+void ConvertTableCommand::Execute()
+{
+   CComObject<PinTable>* table = LoadTable();
+   VPXFileFeedback feedback;
+   HRESULT hr;
+   if (JSONSerializer::IsPack(m_outputFilename) || !m_outputFilename.has_extension())
+   {
+      // An output without extension is written as a pack folder (see JSONSerializer::CreateWriter)
+      table->RemoveInvalidReferences();
+      hr = table->SaveToJSON(m_outputFilename, feedback);
+   }
+   else
+   {
+      table->m_filename = m_outputFilename;
+      hr = table->Save(feedback);
+   }
+   table->Release();
+   if (FAILED(hr))
+   {
+      PLOGE << "Failed to convert " << m_tableFilename << " to " << m_outputFilename;
+      exit(1);
+   }
+   PLOGI << "Converted " << m_tableFilename << " to " << m_outputFilename;
+   exit(0);
 }
 
 
@@ -363,6 +408,7 @@ enum option_names
    OPTION_POVEDIT,
    OPTION_POV,
    OPTION_EXTRACTVBS,
+   OPTION_CONVERT,
    OPTION_INI,
    OPTION_TABLE_INI,
    OPTION_TOURNAMENT,
@@ -411,6 +457,7 @@ static const CommandLineOption options[] = {
    { OPTION_POVEDIT, "PovEdit"s, "[filename]  Load and run file in live editing mode, then export new pov on exit"s },
    { OPTION_POV, "Pov"s, "[filename]  Load, export pov and close"s },
    { OPTION_EXTRACTVBS, "ExtractVBS"s, "[filename]  Load, export table script and close"s },
+   { OPTION_CONVERT, "Convert"s, "[table filename] [output]  Load a table and save it as a .vpx file, a .vpz pack, or a pack folder (output without extension), then close"s },
    { OPTION_INI, "Ini"s, "[filename]  Use a custom settings file instead of loading it from the default location"s },
    { OPTION_TABLE_INI, "TableIni"s, "[filename]  Use a custom table settings file. This option is only available in conjunction with a command which specifies a table filename like Play, Edit,..."s },
    { OPTION_TOURNAMENT, "TournamentFile"s, "[table filename] [tournament filename]  Load a table and tournament file and convert to .png"s },
@@ -515,7 +562,7 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             }
             if (!IsTableFile(filename))
             {
-               OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(filename) + "' is not a Visual Pinball table (.vpx)");
+               OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(filename) + "' is not a Visual Pinball table (.vpx, or a .vpz pack)");
                exit(1);
             }
             commands.push_back(std::make_unique<PlayTableCommand>(filename));
@@ -653,7 +700,7 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 1]);
             // Take the next argument as the table filename unless it is another option. A missing or
             // invalid file is still passed along so the command can report the load failure.
-            if (FileExists(tableFileName) || ((szArglist[i + 1][0] != '-') && (szArglist[i + 1][0] != '/')))
+            if (TableExists(tableFileName) || ((szArglist[i + 1][0] != '-') && (szArglist[i + 1][0] != '/')))
             {
                commands.push_back(std::make_unique<LiveEditCommand>(tableFileName));
                i++;
@@ -686,14 +733,14 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
          const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 1]);
          i++;
 
-         if (!FileExists(tableFileName))
+         if (!TableExists(tableFileName))
          {
             OnCommandLineError("Command Line Error"s, "Table file '" + PathToUTF8(tableFileName) + "' was not found");
             exit(1);
          }
          else if (!IsTableFile(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx)");
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx, or a .vpz pack)");
             exit(1);
          }
          else
@@ -711,6 +758,25 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             default: break;
             }
          }
+         break;
+      }
+
+      case OPTION_CONVERT:
+      {
+         if (i + 2 >= nArgs)
+         {
+            OnCommandLineError("Command Line Error"s, "Option '"s + szArglist[i] + "' must be followed by a table file path and an output path");
+            exit(1);
+         }
+         const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 1]);
+         const std::filesystem::path outputFileName = GetPathFromArg(szArglist[i + 2]);
+         i += 2;
+         if (!IsTableFile(tableFileName))
+         {
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx, or a .vpz pack)");
+            exit(1);
+         }
+         commands.push_back(std::make_unique<ConvertTableCommand>(tableFileName, outputFileName));
          break;
       }
 
@@ -734,14 +800,14 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             exit(1);
          }
          const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 3]);
-         if (!FileExists(tableFileName))
+         if (!TableExists(tableFileName))
          {
             OnCommandLineError("Command Line Error"s, "Table file '" + PathToUTF8(tableFileName) + "' was not found");
             exit(1);
          }
          if (!IsTableFile(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx)");
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx, or a .vpz pack)");
             exit(1);
          }
          bool captureAttractLoop = true;
@@ -768,14 +834,14 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
          }
          const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 1]);
          i++;
-         if (!FileExists(tableFileName))
+         if (!TableExists(tableFileName))
          {
             OnCommandLineError("Command Line Error"s, "Table file '" + PathToUTF8(tableFileName) + "' was not found");
             exit(1);
          }
          if (!IsTableFile(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx)");
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx, or a .vpz pack)");
             exit(1);
          }
          const std::filesystem::path tournamentFileName = GetPathFromArg(szArglist[i + 1]);
