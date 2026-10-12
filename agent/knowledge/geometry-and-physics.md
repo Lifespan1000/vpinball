@@ -48,3 +48,11 @@ Modern tables split each feature into an invisible physics part and separate vis
 ## Shaped parts need outlines
 
 Flasher, light, ramp, rubber, surface and trigger parts are defined by `dragpoints` (outline points with `center: {x, y}`). The editor creates them when a part is placed; a part written as JSON without them has no shape, so `create_part` refuses it. Copy an existing part (`from`) and move its points instead of authoring outlines from scratch.
+
+## Ramps
+
+- A ramp's height at a point is the linear interpolation from `height_bottom` (first dragpoint) to `height_top` (last), **plus that dragpoint's own `position_z`** (`src/parts/ramp.cpp`, `GetRampVertex`); physics uses the same heights. Bumps, dips and roller coaster waves are per point offsets from that line (2026-10-12, a two peak wire return).
+- Build ramps as segments that meet at equal heights (entry, turn, return), as VPW tables do; a ball needs a speed of ~40 at the mouth to climb to height 110 over ~470 of length.
+- For waves, compare effective heights (`h − 0.105 × distance down the table`, the 6° playfield slope): every peak must be well below the height the ball starts its descent at, or a slow ball settles in a dip. Test with a ball placed nearly stationary at the top.
+- A ~40 radius hairpin at the top of a ramp threw a ball arriving at speed ~33 up to 80 above the ramp, over the standard 62 walls, and back down the entry. ~60 radius plus tall invisible walls (`left/right_wall_height` 150, `*_visible` 62: physics and visible heights are separate) kept it within ~20.
+- Put a ramp mouth on the **measured** shot line of the flipper that feeds it (flip a rolling ball at a range of timings and record where it crosses the mouth's height), and make it ~130 wide; mouths placed from a drawing were off by 25–70.
