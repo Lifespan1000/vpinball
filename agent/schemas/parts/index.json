@@ -1,0 +1,128 @@
+[
+  {
+    "type": "ball",
+    "samples": 0,
+    "tables": 0,
+    "properties": 22
+  },
+  {
+    "type": "bumper",
+    "samples": 11,
+    "tables": 3,
+    "properties": 32
+  },
+  {
+    "type": "decal",
+    "samples": 7,
+    "tables": 4,
+    "properties": 24
+  },
+  {
+    "type": "dispreel",
+    "samples": 2,
+    "tables": 1,
+    "properties": 28
+  },
+  {
+    "type": "flasher",
+    "samples": 114,
+    "tables": 7,
+    "properties": 41
+  },
+  {
+    "type": "flipper",
+    "samples": 20,
+    "tables": 8,
+    "properties": 42
+  },
+  {
+    "type": "gate",
+    "samples": 16,
+    "tables": 7,
+    "properties": 28
+  },
+  {
+    "type": "hittarget",
+    "samples": 57,
+    "tables": 3,
+    "properties": 36
+  },
+  {
+    "type": "kicker",
+    "samples": 24,
+    "tables": 7,
+    "properties": 22
+  },
+  {
+    "type": "light",
+    "samples": 619,
+    "tables": 8,
+    "properties": 40
+  },
+  {
+    "type": "lightseq",
+    "samples": 9,
+    "tables": 2,
+    "properties": 16
+  },
+  {
+    "type": "partgroup",
+    "samples": 104,
+    "tables": 8,
+    "properties": 13
+  },
+  {
+    "type": "plunger",
+    "samples": 8,
+    "tables": 7,
+    "properties": 39
+  },
+  {
+    "type": "primitive",
+    "samples": 2482,
+    "tables": 8,
+    "properties": 63
+  },
+  {
+    "type": "ramp",
+    "samples": 59,
+    "tables": 7,
+    "properties": 38
+  },
+  {
+    "type": "rubber",
+    "samples": 78,
+    "tables": 6,
+    "properties": 31
+  },
+  {
+    "type": "spinner",
+    "samples": 3,
+    "tables": 3,
+    "properties": 24
+  },
+  {
+    "type": "surface",
+    "samples": 364,
+    "tables": 8,
+    "properties": 41
+  },
+  {
+    "type": "textbox",
+    "samples": 7,
+    "tables": 7,
+    "properties": 21
+  },
+  {
+    "type": "timer",
+    "samples": 96,
+    "tables": 7,
+    "properties": 12
+  },
+  {
+    "type": "trigger",
+    "samples": 120,
+    "tables": 8,
+    "properties": 24
+  }
+]

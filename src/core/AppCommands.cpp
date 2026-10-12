@@ -21,6 +21,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 
 // A Visual Pinball table is an OLE compound file (CFB). Validate the signature so passing a
@@ -193,25 +194,27 @@ ConvertTableCommand::ConvertTableCommand(const std::filesystem::path& tableFilen
 {
 }
 
-// Headless conversion between .vpx and VPZ packs, so tables can be turned into editable text and back
-// without the editor. The result is only reported through the exit code and the log, as this runs as
-// a GUI application without a console.
+// Saves a table as a pack (.vpz, or a folder for an output without extension, see JSONSerializer::CreateWriter)
+// or as a .vpx file, picked from the output name
+static HRESULT SaveTableAs(PinTable* table, const std::filesystem::path& output)
+{
+   VPXFileFeedback feedback;
+   if (JSONSerializer::IsPack(output) || !output.has_extension())
+   {
+      table->RemoveInvalidReferences();
+      return table->SaveToJSON(output, feedback);
+   }
+   table->m_filename = output;
+   return table->Save(feedback);
+}
+
+// The headless table commands below let tools turn tables into editable text and back, and move parts
+// between tables, without the editor. Results are only reported through the exit code and the log, as
+// this runs as a GUI application without a console.
 void ConvertTableCommand::Execute()
 {
    CComObject<PinTable>* table = LoadTable();
-   VPXFileFeedback feedback;
-   HRESULT hr;
-   if (JSONSerializer::IsPack(m_outputFilename) || !m_outputFilename.has_extension())
-   {
-      // An output without extension is written as a pack folder (see JSONSerializer::CreateWriter)
-      table->RemoveInvalidReferences();
-      hr = table->SaveToJSON(m_outputFilename, feedback);
-   }
-   else
-   {
-      table->m_filename = m_outputFilename;
-      hr = table->Save(feedback);
-   }
+   const HRESULT hr = SaveTableAs(table, m_outputFilename);
    table->Release();
    if (FAILED(hr))
    {
@@ -219,6 +222,85 @@ void ConvertTableCommand::Execute()
       exit(1);
    }
    PLOGI << "Converted " << m_tableFilename << " to " << m_outputFilename;
+   exit(0);
+}
+
+
+ExportPartsCommand::ExportPartsCommand(const std::filesystem::path& tableFilename, const std::filesystem::path& outputFilename, const vector<string>& partNames)
+   : TableBasedCommand(tableFilename)
+   , m_outputFilename(outputFilename)
+   , m_partNames(partNames)
+{
+}
+
+void ExportPartsCommand::Execute()
+{
+   CComObject<PinTable>* table = LoadTable();
+   vector<IEditable*> parts;
+   for (const string& name : m_partNames)
+   {
+      IEditable* const part = table->GetElementByName(name.c_str());
+      if (part == nullptr)
+      {
+         // A missing name fails the whole export, rather than silently producing an incomplete pack
+         PLOGE << "Part '" << name << "' not found in " << m_tableFilename;
+         table->Release();
+         exit(1);
+      }
+      parts.push_back(part);
+   }
+   VPXFileFeedback feedback;
+   const HRESULT hr = table->SavePartsToJSONPack(m_outputFilename, parts, feedback);
+   table->Release();
+   if (FAILED(hr))
+   {
+      PLOGE << "Failed to export parts of " << m_tableFilename << " to " << m_outputFilename;
+      exit(1);
+   }
+   PLOGI << "Exported " << parts.size() << " part(s) of " << m_tableFilename << " to " << m_outputFilename;
+   exit(0);
+}
+
+
+ImportPartsCommand::ImportPartsCommand(const std::filesystem::path& tableFilename, const std::filesystem::path& partsFilename, const std::filesystem::path& outputFilename, PartImportMergeStrategy strategy)
+   : TableBasedCommand(tableFilename)
+   , m_partsFilename(partsFilename)
+   , m_outputFilename(outputFilename)
+   , m_strategy(strategy)
+{
+}
+
+// Same flow as the live editor's part library import, without the player side setup
+void ImportPartsCommand::Execute()
+{
+   CComObject<PinTable>* table = LoadTable();
+   CComObject<PinTable>* parts;
+   CComObject<PinTable>::CreateInstance(&parts);
+   parts->AddRef();
+   VPXFileFeedback feedback;
+   // The merge strategy may rename the assets of the pack on load (conflicting and not equal ones)
+   const std::unique_ptr<JSONSerializer::Deserializer> pack = table->CreateImportDeserializer(m_partsFilename, m_strategy);
+   HRESULT hr = pack != nullptr ? parts->LoadGameFromJSONPack(*pack, feedback) : E_FAIL;
+   // Same as the table load: hash/corrupt content errors still keep the loaded parts
+   if (FAILED(hr) && (hr != APPX_E_BLOCK_HASH_INVALID) && (hr != APPX_E_CORRUPT_CONTENT))
+   {
+      PLOGE << "Failed to load parts pack " << m_partsFilename;
+      parts->Release();
+      table->Release();
+      exit(1);
+   }
+   const vector<IEditable*> imported = table->ImportParts(parts, nullptr);
+   parts->Release();
+   for (IEditable* const part : imported)
+      PLOGI << "Imported part '" << part->GetName() << '\'';
+   hr = SaveTableAs(table, m_outputFilename);
+   table->Release();
+   if (FAILED(hr))
+   {
+      PLOGE << "Failed to save " << m_outputFilename;
+      exit(1);
+   }
+   PLOGI << "Imported " << imported.size() << " part(s) from " << m_partsFilename << " into " << m_outputFilename;
    exit(0);
 }
 
@@ -409,6 +491,8 @@ enum option_names
    OPTION_POV,
    OPTION_EXTRACTVBS,
    OPTION_CONVERT,
+   OPTION_EXPORT_PARTS,
+   OPTION_IMPORT_PARTS,
    OPTION_INI,
    OPTION_TABLE_INI,
    OPTION_TOURNAMENT,
@@ -458,6 +542,8 @@ static const CommandLineOption options[] = {
    { OPTION_POV, "Pov"s, "[filename]  Load, export pov and close"s },
    { OPTION_EXTRACTVBS, "ExtractVBS"s, "[filename]  Load, export table script and close"s },
    { OPTION_CONVERT, "Convert"s, "[table filename] [output]  Load a table and save it as a .vpx file, a .vpz pack, or a pack folder (output without extension), then close"s },
+   { OPTION_EXPORT_PARTS, "ExportParts"s, "[table filename] [output pack] [part names]  Save the named parts (comma separated) and the assets they use to a pack, then close"s },
+   { OPTION_IMPORT_PARTS, "ImportParts"s, "[table filename] [parts pack] [output] [opt rename|existing]  Merge the parts of a pack into the table and save it to output, then close. Assets conflicting by name are renamed unless 'existing' is given"s },
    { OPTION_INI, "Ini"s, "[filename]  Use a custom settings file instead of loading it from the default location"s },
    { OPTION_TABLE_INI, "TableIni"s, "[filename]  Use a custom table settings file. This option is only available in conjunction with a command which specifies a table filename like Play, Edit,..."s },
    { OPTION_TOURNAMENT, "TournamentFile"s, "[table filename] [tournament filename]  Load a table and tournament file and convert to .png"s },
@@ -777,6 +863,53 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             exit(1);
          }
          commands.push_back(std::make_unique<ConvertTableCommand>(tableFileName, outputFileName));
+         break;
+      }
+
+      case OPTION_EXPORT_PARTS:
+      case OPTION_IMPORT_PARTS:
+      {
+         if (i + 3 >= nArgs)
+         {
+            OnCommandLineError("Command Line Error"s, "Option '"s + szArglist[i] + "' must be followed by a table file path and two more arguments (see -help)");
+            exit(1);
+         }
+         const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 1]);
+         if (!IsTableFile(tableFileName))
+         {
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx, or a .vpz pack)");
+            exit(1);
+         }
+         if (opt == OPTION_EXPORT_PARTS)
+         {
+            vector<string> partNames;
+            std::stringstream names(szArglist[i + 3]);
+            for (string name; std::getline(names, name, ',');)
+               if (name = trim_string(name); !name.empty())
+                  partNames.push_back(name);
+            commands.push_back(std::make_unique<ExportPartsCommand>(tableFileName, GetPathFromArg(szArglist[i + 2]), partNames));
+            i += 3;
+         }
+         else
+         {
+            const std::filesystem::path partsFileName = GetPathFromArg(szArglist[i + 2]);
+            const std::filesystem::path outputFileName = GetPathFromArg(szArglist[i + 3]);
+            i += 3;
+            if (!JSONSerializer::IsPack(partsFileName) || !std::filesystem::exists(partsFileName))
+            {
+               OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(partsFileName) + "' is not a .vpz pack");
+               exit(1);
+            }
+            PartImportMergeStrategy strategy = PartImportMergeStrategy::RenameConflict;
+            if (i + 1 < nArgs && StrCompareNoCase("existing"s, szArglist[i + 1]))
+            {
+               strategy = PartImportMergeStrategy::ExistingWins;
+               i++;
+            }
+            else if (i + 1 < nArgs && StrCompareNoCase("rename"s, szArglist[i + 1]))
+               i++;
+            commands.push_back(std::make_unique<ImportPartsCommand>(tableFileName, partsFileName, outputFileName, strategy));
+         }
          break;
       }
 

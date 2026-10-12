@@ -2,6 +2,8 @@
 
 #pragma once
 
+enum class PartImportMergeStrategy; // parts/pintable.h
+
 
 class AppCommand
 {
@@ -61,6 +63,31 @@ public:
 
 private:
    const std::filesystem::path m_outputFilename;
+};
+
+class ExportPartsCommand : public TableBasedCommand
+{
+public:
+   ExportPartsCommand(const std::filesystem::path& tableFilename, const std::filesystem::path& outputFilename, const vector<string>& partNames);
+   ~ExportPartsCommand() override = default;
+   void Execute() override;
+
+private:
+   const std::filesystem::path m_outputFilename;
+   const vector<string> m_partNames;
+};
+
+class ImportPartsCommand : public TableBasedCommand
+{
+public:
+   ImportPartsCommand(const std::filesystem::path& tableFilename, const std::filesystem::path& partsFilename, const std::filesystem::path& outputFilename, PartImportMergeStrategy strategy);
+   ~ImportPartsCommand() override = default;
+   void Execute() override;
+
+private:
+   const std::filesystem::path m_partsFilename;
+   const std::filesystem::path m_outputFilename;
+   const PartImportMergeStrategy m_strategy;
 };
 
 class PlayTableCommand : public TableBasedCommand
