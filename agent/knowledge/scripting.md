@@ -33,3 +33,5 @@ There is **no score, ball count, tilt, game start or rules**: an original table 
 - `GetBalls` returns an array: `balls = GetBalls : Set b = balls(0)`; `GetBalls(0)` fails with "Object required".
 - String literals need their quotes: `PlaySound "target"`. Watch for them being lost when a shell command writes the script.
 - Script text is VBScript in the table's file encoding; keep edits ASCII unless the file already uses something else.
+- **A compile error disables the whole table script, silently.** VPX logs `Compile error on line N, col M` and the table keeps running with no script: no ball is created and nothing responds, which looks like a broken playtest, not a script error. `playtest` now returns `script_errors` when this happens; check before anything else.
+- A single line `If engaged Then LaunchDiverter.RotateToEnd Else LaunchDiverter.RotateToStart` (method calls in both branches) failed to compile in VPX with "Syntax error" at the `Else`; use the block form `If … Then` / `Else` / `End If` (2026-10-12).

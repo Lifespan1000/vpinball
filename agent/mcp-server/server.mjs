@@ -333,7 +333,10 @@ tool(
       sessions.set(pid, { table: abs(table), prefDir, bridge: true, problemsSeen: 0 });
       try {
         const info = await bridge.waitForGame(() => isRunning(pid));
-        return { pid, bridge: true, prefs: prefDir, ...info };
+        // A table script that does not compile still "runs" (no ball, nothing responds): report it up front
+        await new Promise((r) => setTimeout(r, 1000));
+        const scriptErrors = bridge.playtestLog(prefDir).filter((l) => /OnScriptError/.test(l));
+        return { pid, bridge: true, prefs: prefDir, ...info, ...(scriptErrors.length ? { script_errors: scriptErrors, warning: 'the table script has errors: fix them before testing anything else' } : {}) };
       } catch (e) {
         killTree(pid);
         await waitForExit(pid);
